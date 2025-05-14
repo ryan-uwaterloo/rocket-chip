@@ -284,13 +284,15 @@ class SeqPLRU(n_sets: Int, n_ways: Int) extends SeqReplacementPolicy {
     current_state := state.read(set)
   }
 
-  def update(valid: Bool, hit: Bool, set: UInt, way: UInt) = {
-    val update_way = Mux(hit, way, plru_way)
+  def update(valid: Bool, hit: Bool, set: UInt, hit_way: UInt) = {
+    val update_way = Mux(hit, hit_way, plru_way)
     next_state := logic.get_next_state(current_state, update_way)
     when (valid) { state.write(set, next_state) }
   }
 
   def way = plru_way
+
+  def debug_state = current_state
 }
 
 

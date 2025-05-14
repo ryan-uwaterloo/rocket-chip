@@ -43,7 +43,7 @@ case class DCacheParams(
 
   def dataScratchpadBytes: Int = scratch.map(_ => nSets*blockBytes).getOrElse(0)
 
-  def replacement = new RandomReplacement(nWays)
+  def replacement = ReplacementPolicy.fromString(replacementPolicy, nWays) //allow non-random replacement :skull:
 
   def silentDrop: Boolean = !acquireBeforeRelease
 
@@ -292,13 +292,15 @@ trait HasHellaCacheModule {
 class L1Metadata(implicit p: Parameters) extends L1HellaCacheBundle()(p) {
   val coh = new ClientMetadata
   val tag = UInt(tagBits.W)
+  val stale = Bool() //add stale state
 }
 
 object L1Metadata {
-  def apply(tag: Bits, coh: ClientMetadata)(implicit p: Parameters) = {
+  def apply(tag: Bits, coh: ClientMetadata, stale: Bool)(implicit p: Parameters) = {
     val meta = Wire(new L1Metadata)
     meta.tag := tag
     meta.coh := coh
+    meta.stale := false.B //add state init
     meta
   }
 }

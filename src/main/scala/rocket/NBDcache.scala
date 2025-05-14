@@ -46,7 +46,7 @@ class WritebackReq(params: TLBundleParameters)(implicit p: Parameters) extends L
   val param = UInt(TLPermissions.cWidth.W) 
   val way_en = Bits(nWays.W)
   val voluntary = Bool()
-
+  val has_data = Bool()//add for non-silent evicts
 }
 
 class IOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends L1HellaCacheModule()(p) {
@@ -794,7 +794,7 @@ class NonBlockingDCacheModule(outer: NonBlockingDCache) extends HellaCacheModule
   }
 
   // tags
-  def onReset = L1Metadata(0.U, ClientMetadata.onReset)
+  def onReset = L1Metadata(0.U, ClientMetadata.onReset, false.B)
   val meta = Module(new L1MetadataArray(() => onReset ))
   val metaReadArb = Module(new Arbiter(new L1MetaReadReq, 5))
   val metaWriteArb = Module(new Arbiter(new L1MetaWriteReq, 2))
@@ -908,7 +908,7 @@ class NonBlockingDCacheModule(outer: NonBlockingDCache) extends HellaCacheModule
   mshrs.io.req.valid := s2_valid_masked && !s2_hit && (isPrefetch(s2_req.cmd) || isRead(s2_req.cmd) || isWrite(s2_req.cmd))
   mshrs.io.req.bits.viewAsSupertype(new Replay) := s2_req.viewAsSupertype(new HellaCacheReq)
   mshrs.io.req.bits.tag_match := s2_tag_match
-  mshrs.io.req.bits.old_meta := Mux(s2_tag_match, L1Metadata(s2_repl_meta.tag, s2_hit_state), s2_repl_meta)
+  mshrs.io.req.bits.old_meta := Mux(s2_tag_match, L1Metadata(s2_repl_meta.tag, s2_hit_state, s2_repl_meta.stale), s2_repl_meta)
   mshrs.io.req.bits.way_en := Mux(s2_tag_match, s2_tag_match_way, s2_replaced_way_en)
   mshrs.io.req.bits.data := s2_req.data
   when (mshrs.io.req.fire) { replacer.miss }

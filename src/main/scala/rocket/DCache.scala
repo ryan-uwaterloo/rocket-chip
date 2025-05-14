@@ -296,7 +296,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
       val baseAddr = p(LookupByHartId)(_.dcache.flatMap(_.scratch.map(_.U)), io_hartid.get) | io_mmio_address_prefix.get
       val inScratchpad = s1_paddr >= baseAddr && s1_paddr < baseAddr + (nSets * cacheBlockBytes).U
       val hitState = Mux(inScratchpad, ClientMetadata.maximum, ClientMetadata.onReset)
-      val dummyMeta = L1Metadata(0.U, ClientMetadata.onReset)
+      val dummyMeta = L1Metadata(0.U, ClientMetadata.onReset, false.B)
       (inScratchpad, hitState, Seq(tECC.encode(dummyMeta.asUInt)))
     } else {
       val metaReq = metaArb.io.out
@@ -458,7 +458,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   metaArb.io.in(2).bits.way_en := s2_victim_or_hit_way
   metaArb.io.in(2).bits.idx := s2_vaddr(idxMSB, idxLSB)
   metaArb.io.in(2).bits.addr := Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0))
-  metaArb.io.in(2).bits.data := tECC.encode(L1Metadata(s2_req.addr >> tagLSB, s2_new_hit_state).asUInt)
+  metaArb.io.in(2).bits.data := tECC.encode(L1Metadata(s2_req.addr >> tagLSB, s2_new_hit_state, false.B).asUInt)
 
   // load reservations and TL error reporting
   val s2_lr = (usingAtomics && !usingDataScratchpad).B && s2_req.cmd === M_XLR
@@ -737,7 +737,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   metaArb.io.in(3).bits.way_en := refill_way
   metaArb.io.in(3).bits.idx := s2_vaddr(idxMSB, idxLSB)
   metaArb.io.in(3).bits.addr := Cat(io.cpu.req.bits.addr >> untagBits, s2_vaddr(idxMSB, 0))
-  metaArb.io.in(3).bits.data := tECC.encode(L1Metadata(s2_req.addr >> tagLSB, s2_hit_state.onGrant(s2_req.cmd, tl_out.d.bits.param)).asUInt)
+  metaArb.io.in(3).bits.data := tECC.encode(L1Metadata(s2_req.addr >> tagLSB, s2_hit_state.onGrant(s2_req.cmd, tl_out.d.bits.param), false.B).asUInt)
 
   if (!cacheParams.separateUncachedResp) {
     // don't accept uncached grants if there's a structural hazard on s2_data...
@@ -904,7 +904,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   metaArb.io.in(4).bits.way_en := releaseWay
   metaArb.io.in(4).bits.idx := probeIdx(probe_bits)
   metaArb.io.in(4).bits.addr := Cat(io.cpu.req.bits.addr >> untagBits, probe_bits.address(idxMSB, 0))
-  metaArb.io.in(4).bits.data := tECC.encode(L1Metadata(tl_out_c.bits.address >> tagLSB, newCoh).asUInt)
+  metaArb.io.in(4).bits.data := tECC.encode(L1Metadata(tl_out_c.bits.address >> tagLSB, newCoh, false.B).asUInt)
   when (metaArb.io.in(4).fire) { release_state := s_ready }
 
   // cached response
@@ -1040,7 +1040,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   metaArb.io.in(0).bits := metaArb.io.in(5).bits
   metaArb.io.in(0).bits.write := true.B
   metaArb.io.in(0).bits.way_en := ~0.U(nWays.W)
-  metaArb.io.in(0).bits.data := tECC.encode(L1Metadata(0.U, ClientMetadata.onReset).asUInt)
+  metaArb.io.in(0).bits.data := tECC.encode(L1Metadata(0.U, ClientMetadata.onReset, false.B).asUInt)
   when (resetting) {
     flushCounter := flushCounterNext
     when (flushDone) {
