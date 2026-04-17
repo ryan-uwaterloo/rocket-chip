@@ -282,7 +282,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
                   a_d.bits := edgeIn.Grant(
                     fromSink = 0.U,
-                    toSource = a_q_mem(a_deq_ptr.value).source,
+                    toSource = a_q_mem(a_deq_ptr.value).source >> 1,
                     lgSize = a_q_mem(a_deq_ptr.value).size,
                     capPermissions = TLPermissions.toT,
                     data = c_q_mem(tagmatch_ptr).data
@@ -334,7 +334,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
           when (a_d.ready) {
             a_d.bits := edgeIn.Grant(
               fromSink = 0.U,
-              toSource = a_q_mem(a_deq_ptr.value).source,
+              toSource = a_q_mem(a_deq_ptr.value).source >> 1,
               lgSize = a_q_mem(a_deq_ptr.value).size,
               capPermissions = TLPermissions.toT,
               data = c_q_mem(tagmatch_ptr).data
