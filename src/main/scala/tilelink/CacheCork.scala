@@ -12,7 +12,9 @@ import TLMessages._
 case class TLCacheCorkParams(
   unsafe: Boolean = false,
   sinkIds: Int = 20,
-  writeBufEntries: Int = 32)
+  writeBufEntries: Int = 32,
+  ram_latency: Int = 100,
+  ram_bandiwdth: Int = 10)
 
 class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: Parameters) extends LazyModule
 {
@@ -70,6 +72,12 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val toD = (in.a.bits.opcode === AcquireBlock && in.a.bits.param === TLPermissions.BtoT) ||
                   (in.a.bits.opcode === AcquirePerm)
         in.a.ready := Mux(toD, a_d.ready, a_a.ready)
+
+        // latency implementation
+        val a_latency_bits = Wire(chiselTypeOf(out.a.bits))
+        val a_latency_valid = Wire(chiselTypeOf(out.a.valid))
+        out.a.bits := ShiftRegister(a_latency_bits, params.ram_latency - 4, out.a.ready)
+        out.a.valid := ShiftRegister(a_latency_valid, params.ram_latency - 4, out.a.ready)
 
         a_a.valid := in.a.valid && !toD
         a_a.bits := in.a.bits
@@ -168,8 +176,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         // Combine the sources of messages into the channels
         // TLArbiter(TLArbiter.lowestIndexFirst)(out.a, (edgeOut.numBeats1(c_a.bits), c_a), (edgeOut.numBeats1(a_a.bits), a_a))
-        out.a.valid := false.B 
-        out.a.bits := DontCare
+        a_latency_valid := false.B 
+        a_latency_bits := DontCare
         TLArbiter(TLArbiter.lowestIndexFirst)(in_d, (edgeIn.numBeats1(d_d.bits), d_d), (0.U, Queue(c_a_d, 2)), (0.U, Queue(c_d, 2)), (edgeIn.numBeats1(a_d.bits), Queue(a_d, 4)))
 
         // implement two queues: write queue and high-priority queue.
@@ -282,7 +290,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
                   a_d.bits := edgeIn.Grant(
                     fromSink = 0.U,
-                    toSource = a_q_mem(a_deq_ptr.value).source,
+                    toSource = a_q_mem(a_deq_ptr.value).source >> 1,
                     lgSize = a_q_mem(a_deq_ptr.value).size,
                     capPermissions = TLPermissions.toT,
                     data = c_q_mem(tagmatch_ptr).data
@@ -290,14 +298,14 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
                   a_d.valid := true.B
                 }
               }.elsewhen(out.a.ready) {
-                out.a.bits := a_q_mem(a_deq_ptr.value)
-                out.a.valid := true.B
+                a_latency_bits := a_q_mem(a_deq_ptr.value)
+                a_latency_valid := true.B
                 a_deq_ptr.inc()
               }
             }.otherwise { //writes
               when (out.a.ready && c_a_d.ready) {
-                out.a.bits := c_q_mem(c_deq_ptr.value)
-                out.a.valid := true.B
+                a_latency_bits := c_q_mem(c_deq_ptr.value)
+                a_latency_valid := true.B
                 a_deq_ptr.inc()
                 a_deq := true.B
                 c_deq_ptr.inc()
@@ -322,8 +330,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
               }
             }
           }.elsewhen (!c_empty && out.a.ready) {
-            out.a.bits := c_q_mem(c_deq_ptr.value)
-            out.a.valid := true.B 
+            a_latency_bits := c_q_mem(c_deq_ptr.value)
+            a_latency_valid := true.B 
             c_deq_ptr.inc()
             c_deq := true.B
             c_addr_map(c_deq_ptr.value).valid := false.B
@@ -334,7 +342,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
           when (a_d.ready) {
             a_d.bits := edgeIn.Grant(
               fromSink = 0.U,
-              toSource = a_q_mem(a_deq_ptr.value).source,
+              toSource = a_q_mem(a_deq_ptr.value).source >> 1,
               lgSize = a_q_mem(a_deq_ptr.value).size,
               capPermissions = TLPermissions.toT,
               data = c_q_mem(tagmatch_ptr).data
@@ -358,7 +366,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         }
 
         // bandwidth impl
-        val beats_init_tx = edgeOut.numBeats1(out.a.bits)
+        val beats_init_tx = edgeOut.numBeats1(a_latency_bits)
         val beats_left_tx = RegInit(0.U(4.W))
 
         val dec_counter = Wire(Bool())
@@ -366,17 +374,17 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         dec_counter := false.B
         reset_counter := false.B
 
-        bandwidth_ctr := Mux(reset_counter, 40.U, 
+        bandwidth_ctr := Mux(reset_counter, params.ram_bandiwdth.U, 
             Mux(dec_counter, bandwidth_ctr - 1.U, bandwidth_ctr))
 
         when (out.a.ready && !tagmatch_latch) {
-          when (out.a.valid) {
+          when (a_latency_valid) {
             when (bandwidth_ctr === 0.U && (beats_init_tx === 0.U || beats_left_tx === 1.U)) {
               reset_counter := true.B
             }
             beats_left_tx := Mux(beats_init_tx =/= 1.U, Mux(beats_left_tx === 0.U, beats_init_tx, beats_left_tx - 1.U), 0.U)
-            when (out.a.bits.opcode === 4.U) {assert(beats_init_tx === 0.U)}
-            when (out.a.bits.opcode === 0.U) {assert(beats_init_tx === 3.U)}
+            when (a_latency_bits.opcode === 4.U) {assert(beats_init_tx === 0.U)}
+            when (a_latency_bits.opcode === 0.U) {assert(beats_init_tx === 3.U)}
           }
           when (bandwidth_ctr =/= 0.U) {
             dec_counter := true.B
