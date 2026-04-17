@@ -329,12 +329,14 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
                 }
               }
             }
-          }.elsewhen (!c_empty && out.a.ready) {
-            a_latency_bits := c_q_mem(c_deq_ptr.value)
-            a_latency_valid := true.B 
-            c_deq_ptr.inc()
+          }.elsewhen (!c_empty) {
             c_deq := true.B
-            c_addr_map(c_deq_ptr.value).valid := false.B
+            when (out.a.ready) {
+              a_latency_bits := c_q_mem(c_deq_ptr.value)
+              a_latency_valid := true.B 
+              c_deq_ptr.inc()
+              c_addr_map(c_deq_ptr.value).valid := false.B
+            }
           }
         }
 
