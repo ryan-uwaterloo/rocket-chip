@@ -213,7 +213,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         // ready signals
         c_a.ready := (!c_full && !a_deq) || c_a_to_a_queue.fire
-        out_a_q.ready := !a_full
+        out_a_q.ready := !a_full && !c_deq
 
         // handle multi-beat nonsense and tagmatching
         val bandwidth_ctr = RegInit(0.U(8.W))
@@ -287,6 +287,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
                     capPermissions = TLPermissions.toT,
                     data = c_q_mem(tagmatch_ptr).data
                   )
+                  a_d.valid := true.B
                 }
               }.elsewhen(out.a.ready) {
                 out.a.bits := a_q_mem(a_deq_ptr.value)
@@ -338,6 +339,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
               capPermissions = TLPermissions.toT,
               data = c_q_mem(tagmatch_ptr).data
             )
+            a_d.valid := true.B
             beats_left_tgmtch := beats_left_tgmtch - 1.U
             when (tagmatch_latch && beats_left_tgmtch === 1.U) { // last tagmatch beat
               a_deq_ptr.inc()
