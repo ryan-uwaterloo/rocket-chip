@@ -71,7 +71,6 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val isPut = in.a.bits.opcode === PutFullData || in.a.bits.opcode === PutPartialData
         val toD = (in.a.bits.opcode === AcquireBlock && in.a.bits.param === TLPermissions.BtoT) ||
                   (in.a.bits.opcode === AcquirePerm)
-        in.a.ready := Mux(toD, a_d.ready, a_a.ready)
 
         // latency implementation
         val a_latency_bits = Wire(chiselTypeOf(out.a.bits))
@@ -240,6 +239,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val tagmatch_ptr = tagmatch_ptr_part + Mux(beats_left_tgmtch === 0.U, 0.U, beats_init_tgmtch - beats_left_tgmtch + 1.U)
         val tagmatch_latch = RegInit(false.B)
 
+        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), a_a.ready)
+
         val addr_old = RegInit(chiselTypeOf(a_a.bits.address), 0.U)
 
         val beats_init_c = edgeIn.numBeats1(c_a.bits)
@@ -283,7 +284,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
             when (a_q_mem(a_deq_ptr.value).opcode === TLMessages.Get) { //read
               a_deq := true.B
               when (tagmatch_valid) { // forward
-                when (a_d.ready && a_d.count <= 2.U) {
+                when (a_d.ready) {
                   printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
                   tagmatch_latch := true.B
                   beats_left_tgmtch := beats_init_tgmtch
