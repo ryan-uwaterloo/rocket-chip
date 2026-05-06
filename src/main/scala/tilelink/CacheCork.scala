@@ -71,7 +71,6 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val isPut = in.a.bits.opcode === PutFullData || in.a.bits.opcode === PutPartialData
         val toD = (in.a.bits.opcode === AcquireBlock && in.a.bits.param === TLPermissions.BtoT) ||
                   (in.a.bits.opcode === AcquirePerm)
-        in.a.ready := Mux(toD, a_d.ready, a_a.ready)
 
         // latency implementation
         val a_latency_bits = Wire(chiselTypeOf(out.a.bits))
@@ -178,7 +177,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         // TLArbiter(TLArbiter.lowestIndexFirst)(out.a, (edgeOut.numBeats1(c_a.bits), c_a), (edgeOut.numBeats1(a_a.bits), a_a))
         a_latency_valid := false.B 
         a_latency_bits := DontCare
-        TLArbiter(TLArbiter.lowestIndexFirst)(in_d, (edgeIn.numBeats1(d_d.bits), d_d), (0.U, Queue(c_a_d, 2)), (0.U, Queue(c_d, 2)), (edgeIn.numBeats1(a_d.bits), Queue(a_d, 4)))
+        TLArbiter(TLArbiter.lowestIndexFirst)(in_d, (edgeIn.numBeats1(d_d.bits), d_d), (0.U, Queue(c_a_d, 2)), (0.U, Queue(c_d, 2)), (edgeIn.numBeats1(a_d.bits), Queue(a_d, 8)))
 
         // implement two queues: write queue and high-priority queue.
         val c_enq = Wire(Bool())
@@ -240,6 +239,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val tagmatch_ptr = tagmatch_ptr_part + Mux(beats_left_tgmtch === 0.U, 0.U, beats_init_tgmtch - beats_left_tgmtch + 1.U)
         val tagmatch_latch = RegInit(false.B)
 
+        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), a_a.ready)
+
         val addr_old = RegInit(chiselTypeOf(a_a.bits.address), 0.U)
 
         val beats_init_c = edgeIn.numBeats1(c_a.bits)
@@ -259,7 +260,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
           when (tagmatch_valid) { // do write coalesce
             c_q_mem(tagmatch_ptr) := c_a.bits
           }.otherwise {
-            printf(cf"enqueueing 0x${c_a.bits.address}%x as opcode ${c_a.bits.opcode}")
+            printf(cf"enqueueing 0x${c_a.bits.address}%x as opcode ${c_a.bits.opcode}\n")
             c_enq := true.B
             c_q_mem(c_enq_ptr.value) := c_a.bits
             c_enq_ptr.inc()
@@ -284,6 +285,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
               a_deq := true.B
               when (tagmatch_valid) { // forward
                 when (a_d.ready) {
+                  printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
                   tagmatch_latch := true.B
                   beats_left_tgmtch := beats_init_tgmtch
                   tagmatch_addr := c_addr_map(tagmatch_ptr).bits
@@ -342,6 +344,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         when (tagmatch_latch) { //temportarily halt all dequeues to process forward
           when (a_d.ready) {
+            printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
             a_d.bits := edgeIn.Grant(
               fromSink = 0.U,
               toSource = a_q_mem(a_deq_ptr.value).source >> 1,
