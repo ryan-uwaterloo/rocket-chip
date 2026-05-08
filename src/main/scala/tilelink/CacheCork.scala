@@ -78,7 +78,6 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         out.a.bits := ShiftRegister(a_latency_bits, params.ram_latency - 4, out.a.ready)
         out.a.valid := ShiftRegister(a_latency_valid, params.ram_latency - 4, out.a.ready)
 
-        a_a.valid := in.a.valid && !toD
         a_a.bits := in.a.bits
         a_a.bits.source := in.a.bits.source << 1 | Mux(isPut, 1.U, 0.U)
 
@@ -220,7 +219,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         // ready signals
         c_a.ready := (!c_full && !a_deq) || c_a_to_a_queue.fire
-        out_a_q.ready := !a_full && !c_deq
+        out_a_q.ready := !a_full
+        a_a.valid := in.a.valid && !toD && !c_deq
 
         // handle multi-beat nonsense and tagmatching
         val bandwidth_ctr = RegInit(0.U(8.W))
@@ -239,7 +239,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val tagmatch_ptr = tagmatch_ptr_part + Mux(beats_left_tgmtch === 0.U, 0.U, beats_init_tgmtch - beats_left_tgmtch + 1.U)
         val tagmatch_latch = RegInit(false.B)
 
-        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), a_a.ready)
+        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), (a_a.ready && !c_deq))
 
         val addr_old = RegInit(chiselTypeOf(a_a.bits.address), 0.U)
 
