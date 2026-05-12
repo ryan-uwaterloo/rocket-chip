@@ -207,18 +207,25 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         // this wire carries bypass
         val c_a_to_a_queue = Wire(chiselTypeOf(out.a))
+        val enq_c_req_to_a = RegInit(false.B)
         c_a_to_a_queue.bits := c_a.bits
-        c_a_to_a_queue.valid := c_a.valid && c_full
+        c_a_to_a_queue.valid := c_a.valid && (enq_c_req_to_a || c_full)
 
         val out_a_q = Wire(chiselTypeOf(out.a))
         
         TLArbiter(TLArbiter.roundRobin)(out_a_q, (edgeIn.numBeats1(c_a_to_a_queue.bits), c_a_to_a_queue), (0.U, a_a))
 
+        when (c_full) { // switch to enqueing to a when writebuff fills
+          enq_c_req_to_a := true.B
+        }.elsewhen (a_empty) { // switch back only when high prio queue empties and c is no longer full.
+          enq_c_req_to_a := false.B 
+        }
+
         val c_addr_map = RegInit(VecInit(Seq.fill(params.writeBufEntries)(0.U.asTypeOf(Valid(chiselTypeOf(c_a.bits.address))))))
         val c_q_mem = Mem(params.writeBufEntries, chiselTypeOf(c_a.bits)) // an optimization exists here for multi-beat requests but I am simply too lazy to figure it out.
 
         // ready signals
-        c_a.ready := (!c_full && !a_deq) || c_a_to_a_queue.fire
+        c_a.ready := (!(c_full || a_deq || enq_c_req_to_a)) || c_a_to_a_queue.fire
         out_a_q.ready := !a_full
         a_a.valid := in.a.valid && !toD && !c_deq
 
@@ -251,7 +258,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         }
 
         // enqueueing
-        when (c_a.fire && !c_full) { //enq write
+        when (c_a.fire) { //enq write
           // send resp immediately
           when(beats_left_c === 0.U) {
             c_a_d.valid := true.B
@@ -343,6 +350,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         }
 
         when (tagmatch_latch) { //temportarily halt all dequeues to process forward
+          a_deq := true.B
           when (a_d.ready) {
             printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
             a_d.bits := edgeIn.Grant(
@@ -356,7 +364,6 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
             beats_left_tgmtch := beats_left_tgmtch - 1.U
             when (tagmatch_latch && beats_left_tgmtch === 1.U) { // last tagmatch beat
               a_deq_ptr.inc()
-              a_deq := true.B
               tagmatch_latch := false.B
             }
           }
