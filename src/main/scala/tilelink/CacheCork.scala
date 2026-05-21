@@ -12,9 +12,10 @@ import TLMessages._
 case class TLCacheCorkParams(
   unsafe: Boolean = false,
   sinkIds: Int = 20,
-  writeBufEntries: Int = 32,
-  ram_latency: Int = 100,
-  ram_bandiwdth: Int = 10)
+  writeBufEntries: Int = 80,
+  ram_latency: Int = 10,
+  ram_bandiwdth: Int = 100,
+  a_queue_depth: Int = 100)
 
 class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: Parameters) extends LazyModule
 {
@@ -189,8 +190,8 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         a_deq := false.B
 
         // high-priority queue is a bigger queue with no fancy things going on.
-        val a_enq_ptr = Counter(88)
-        val a_deq_ptr = Counter(88)
+        val a_enq_ptr = Counter(params.a_queue_depth)
+        val a_deq_ptr = Counter(params.a_queue_depth)
         val a_maybe_full = RegInit(false.B)
         val a_ptr_match = a_deq_ptr.value === a_enq_ptr.value
         val a_full = a_ptr_match && a_maybe_full
@@ -203,7 +204,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val c_full = c_ptr_match && c_maybe_full
         val c_empty = c_ptr_match && !c_maybe_full
 
-        val a_q_mem = Mem(88, chiselTypeOf(a_a.bits)) // each write occupies 4 slots. great.
+        val a_q_mem = Mem(params.a_queue_depth, chiselTypeOf(a_a.bits)) // each write occupies 4 slots. great.
 
         // this wire carries bypass
         val c_a_to_a_queue = Wire(chiselTypeOf(out.a))
@@ -258,7 +259,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         }
 
         // enqueueing
-        when (c_a.fire) { //enq write
+        when (c_a.fire && !c_a_to_a_queue.valid) { //enq write to C queue
           // send resp immediately
           when(beats_left_c === 0.U) {
             c_a_d.valid := true.B
