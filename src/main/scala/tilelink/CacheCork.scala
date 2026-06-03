@@ -13,8 +13,8 @@ case class TLCacheCorkParams(
   unsafe: Boolean = false,
   sinkIds: Int = 20,
   writeBufEntries: Int = 80,
-  ram_latency: Int = 10,
-  ram_bandiwdth: Int = 100,
+  ram_latency: Int = 100,
+  ram_bandiwdth: Int = 10,
   a_queue_depth: Int = 100)
 
 class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: Parameters) extends LazyModule
@@ -254,6 +254,10 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val beats_init_c = edgeIn.numBeats1(c_a.bits)
         val beats_left_c = RegInit(0.U(4.W))
 
+        // bandwidth impl
+        val beats_init_tx = edgeOut.numBeats1(a_latency_bits)
+        val beats_left_tx = RegInit(0.U(4.W))
+
         when (c_enq) {
           beats_left_c := Mux(beats_left_c === 0.U, beats_init_c, beats_left_c - 1.U)
         }
@@ -290,27 +294,29 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
           when (!a_empty) {
             // handle read vs write
             when (a_q_mem(a_deq_ptr.value).opcode === TLMessages.Get) { //read
-              a_deq := true.B
-              when (tagmatch_valid) { // forward
-                when (a_d.ready) {
-                  printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
-                  tagmatch_latch := true.B
-                  beats_left_tgmtch := beats_init_tgmtch
-                  tagmatch_addr := c_addr_map(tagmatch_ptr).bits
+              when(beats_left_tx === 0.U) {
+                a_deq := true.B
+                when (tagmatch_valid) { // forward
+                  when (a_d.ready) {
+                    printf(cf"bypassing request from source ${a_q_mem(a_deq_ptr.value).source >> 1}\n")
+                    tagmatch_latch := true.B
+                    beats_left_tgmtch := beats_init_tgmtch
+                    tagmatch_addr := c_addr_map(tagmatch_ptr).bits
 
-                  a_d.bits := edgeIn.Grant(
-                    fromSink = 0.U,
-                    toSource = a_q_mem(a_deq_ptr.value).source >> 1,
-                    lgSize = a_q_mem(a_deq_ptr.value).size,
-                    capPermissions = TLPermissions.toT,
-                    data = c_q_mem(tagmatch_ptr).data
-                  )
-                  a_d.valid := true.B
+                    a_d.bits := edgeIn.Grant(
+                      fromSink = 0.U,
+                      toSource = a_q_mem(a_deq_ptr.value).source >> 1,
+                      lgSize = a_q_mem(a_deq_ptr.value).size,
+                      capPermissions = TLPermissions.toT,
+                      data = c_q_mem(tagmatch_ptr).data
+                    )
+                    a_d.valid := true.B
+                  }
+                }.elsewhen(out.a.ready) {
+                  a_latency_bits := a_q_mem(a_deq_ptr.value)
+                  a_latency_valid := true.B
+                  a_deq_ptr.inc()
                 }
-              }.elsewhen(out.a.ready) {
-                a_latency_bits := a_q_mem(a_deq_ptr.value)
-                a_latency_valid := true.B
-                a_deq_ptr.inc()
               }
             }.otherwise { //writes
               when (out.a.ready && c_a_d.ready) {
@@ -348,6 +354,14 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
               c_addr_map(c_deq_ptr.value).valid := false.B
             }
           }
+        }.elsewhen (!a_empty && !c_full && a_q_mem(a_deq_ptr.value).opcode =/= TLMessages.Get && beats_left_c =/= 0.U && !tagmatch_latch) {
+          // catch corner where c empties out while a is getting a put request
+          // this is naive and only doing residual requests, we already caught tagmatches
+          c_enq := true.B
+          a_deq := true.B
+          a_deq_ptr.inc()
+          c_enq_ptr.inc()
+          c_q_mem(c_enq_ptr.value) := a_q_mem(a_deq_ptr.value)
         }
 
         when (tagmatch_latch) { //temportarily halt all dequeues to process forward
@@ -377,10 +391,6 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         when (a_deq =/= a_enq) {
           a_maybe_full := a_enq
         }
-
-        // bandwidth impl
-        val beats_init_tx = edgeOut.numBeats1(a_latency_bits)
-        val beats_left_tx = RegInit(0.U(4.W))
 
         val dec_counter = Wire(Bool())
         val reset_counter = Wire(Bool())
