@@ -13,8 +13,8 @@ case class TLCacheCorkParams(
   unsafe: Boolean = false,
   sinkIds: Int = 20,
   writeBufEntries: Int = 80,
-  ram_latency: Int = 10,
-  ram_bandiwdth: Int = 100,
+  ram_latency: Int = 100,
+  ram_bandiwdth: Int = 10,
   a_queue_depth: Int = 100,
   num_write_beats: Int = 4,
   num_llc_mshrs: Int = 20)
@@ -107,7 +107,6 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
 
         // Take ReleaseData from C to A; Release from C to D
         val c_a = Wire(chiselTypeOf(out.a))
-        c_a.valid := in.c.valid && in.c.bits.opcode === ReleaseData
         c_a.bits := edgeOut.Put(
           fromSource = in.c.bits.source << 1,
           toAddress  = in.c.bits.address,
@@ -216,7 +215,6 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
 
         // ready signals
         rs_data_in.ready := true.B
-        a_a.valid := in.a.valid && !toD && !c_deq
         
         val bandwidth_ctr = RegInit(0.U((log2Ceil(params.ram_bandiwdth)).W))
 
@@ -229,13 +227,13 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         val rs_service_q_in = Wire(Decoupled(chiselTypeOf(rs_data_in.bits.source >> 1)))
         rs_service_q_in.valid := false.B
         rs_service_q_in.bits := DontCare
-        val rs_out_sel = Queue(rs_service_q_in, params.num_llc_mshrs, pipe=true)
+        val rs_out_sel = Queue(rs_service_q_in, params.num_llc_mshrs, pipe=false)
         rs_out_sel.ready := false.B
-        val rs_out_rNw = rs_valid_vec(rs_out_sel.bits).readValid
+        val rs_out_rNw = Wire(Bool())
         val rs_out_base_addr = (rs_out_sel.bits << 2.U) + (rs_out_sel.bits)
-        rs_out_rNw := rs_valid_vec(rs_out_sel.bits).readValid
 
         assert(!(!rs_empty && !rs_out_sel.valid))
+        assert(!(rs_empty && rs_out_sel.valid))
 
         val rs_mem_data_out = rs_mem(Mux(rs_out_rNw, rs_out_base_addr, (rs_out_base_addr + Mux(beats_left_out === 0.U, 1.U, (params.num_write_beats.U - beats_left_out) + 1.U))))
         val tagmatch_wire = Cat(c_addr_map.map(entry => entry.bits === rs_mem_data_out.address && entry.valid).reverse) //write forwarding and coalescing
@@ -249,8 +247,6 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         val tagmatch_ptr = tagmatch_ptr_part + Mux(beats_left_out === 0.U, 0.U, (params.num_write_beats-1).U - beats_left_out)
         val tagmatch_latch = RegInit(false.B)
 
-        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), (a_a.ready && !c_deq))
-
         // val addr_old = RegInit(chiselTypeOf(a_a.bits.address), 0.U)
 
         // bandwidth impl counter declaration
@@ -259,7 +255,7 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
 
         // general TODO changes:
         // [x] all enqueues go into RS 
-        // [ ] claim RS logic
+        // [x] claim RS logic
         // [x] free RS logic
         // [x] dequeues from RS 
         // [x] pass write from RS to c_queue like we have below 
@@ -296,8 +292,26 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
           }
         }
 
+        val valid_write = rs_valid_vec(rs_out_sel.bits).writeValid ||
+            ((rs_data_in.bits.source >> 1 === rs_out_sel.bits) && 
+            rs_data_in.valid && rs_data_in.bits.opcode =/= TLMessages.Get)
+        val c_latch = RegInit(false.B)
+        val c_wire = Wire(Bool())
+        val do_write = Mux(c_wire, true.B, c_latch)
+        c_wire := false.B
+
+        val unsafe_write = c_deq && !do_write // don't need a counter, the ram BW itself will let things go through
+
+        a_a.valid := in.a.valid && !toD && !unsafe_write
+        c_a.valid := in.c.valid && in.c.bits.opcode === ReleaseData && !unsafe_write
+
+        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), (a_a.ready && !unsafe_write))
+        in.c.ready := Mux(in.c.bits.opcode === Release, c_d.ready, (c_a.ready && !unsafe_write))
+
+        rs_out_rNw := rs_valid_vec(rs_out_sel.bits).readValid && !(c_latch && !tagmatch_latch)
+
         // dequeues
-        when (bandwidth_ctr === 0.U && !tagmatch_latch) {
+        when (bandwidth_ctr === 0.U && !tagmatch_latch && !c_latch) {
           // RS always highest prio first
           when (rs_out_sel.valid) {
             // handle read vs write
@@ -307,14 +321,14 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
                   when (a_d.ready) {
                     clear_read_rs := true.B
 
-                    printf(cf"bypassing request from source ${rs_valid_vec(rs_out_sel.bits).source}\n")
+                    printf(cf"bypassing request from source ${rs_out_sel.bits}\n")
                     tagmatch_latch := true.B
                     beats_left_out := (params.num_write_beats-1).U
                     tagmatch_addr := c_addr_map(tagmatch_ptr).bits
 
                     a_d.bits := edgeIn.Grant(
                       fromSink = 0.U,
-                      toSource = rs_valid_vec(rs_out_sel.bits).source,
+                      toSource = rs_out_sel.bits,
                       lgSize = rs_mem_data_out.size,
                       capPermissions = TLPermissions.toT,
                       data = rs_mem_data_out.data
@@ -330,108 +344,39 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
                 when (clear_read_rs) {
                   // clear RS
                   rs_valid_vec(rs_out_sel.bits).readValid := false.B
-                  rs_out_sel.ready := true.B
-                  // append write to service queue if present
-                  when (rs_valid_vec(rs_out_sel.bits).writeValid ||
-                    ((rs_data_in.bits.source >> 1 === rs_valid_vec(rs_out_sel.bits).source) && 
-                    rs_data_in.valid && rs_data_in.bits.opcode =/= TLMessages.Get)) {
+                  rs_out_sel.ready := !valid_write || c_full
+                  when (valid_write) { // manage following write
+                    when (!c_full) {
+                      c_latch := true.B 
+                    }.otherwise {
                       rs_service_q_in.bits := rs_out_sel.bits
                       rs_service_q_in.valid := true.B
+                    }  
                   }
                 }
               }
             }.otherwise { //writes
-              when (c_full) { // push-through
-                when (out.a.ready && c_a_d.ready) {
-                  clear_write_rs := true.B
-                  a_latency_bits := c_q_mem(c_deq_ptr.value)
-                  a_latency_valid := true.B
-                  c_deq_ptr.inc()
-                  c_deq := true.B 
-                  when (tagmatch_valid) {
-                    c_q_mem(tagmatch_ptr) := rs_mem_data_out
-                  }.otherwise {
-                    c_q_mem(c_enq_ptr.value) := rs_mem_data_out
-                    c_enq_ptr.inc()
-                    c_enq := true.B
-                    when (beats_left_out === 1.U) { // update address pointer in table on last beat, point to first beat
-                      // THIS IS NOT SAFE FOR NON-POW2 SIZED WRITE BUFFERS.
-                      c_addr_map(c_enq_ptr.value - beats_init_out).bits := rs_mem_data_out.address
-                      c_addr_map(c_enq_ptr.value - beats_init_out).valid := true.B
-                    }
-                  }
-                }
-              }.otherwise { // writes to c_queue, and ack
-                // enqueueing
-                when (c_a_d.ready) {
-                  clear_write_rs := true.B
-                  // access data
-                  when (tagmatch_valid) { // do write coalesce
-                    c_q_mem(tagmatch_ptr) := rs_mem_data_out
-                  }.otherwise {
-                    printf(cf"enqueueing 0x${rs_mem_data_out.address}%x as opcode ${rs_mem_data_out.opcode}\n")
-                    c_enq := true.B
-                    c_q_mem(c_enq_ptr.value) := rs_mem_data_out
-                    c_enq_ptr.inc()
-                    when (beats_left_out === 1.U) { // update address pointer in table on last beat, point to first beat
-                      // THIS IS NOT SAFE FOR NON-POW2 SIZED WRITE BUFFERS.
-                      c_addr_map(c_enq_ptr.value - beats_init_out).bits := rs_mem_data_out.address
-                      c_addr_map(c_enq_ptr.value - beats_init_out).valid := true.B
-                    }
-                  }
-                }
-              }
-              when (clear_write_rs) {
-                // ack writes
-                when (beats_left_out === 0.U) { // only for first beat
-                  c_a_d.valid := true.B
-                  c_a_d.bits := edgeIn.ReleaseAck(
-                    toSource = rs_mem_data_out.source >> 1,
-                    lgSize = rs_mem_data_out.size,
-                    denied = false.B)
-                  // set beats left_out for write
-                  beats_left_out := (params.num_write_beats-1).U
-                }.otherwise {
-                  beats_left_out := beats_left_out - 1.U
-                }
-                // clear RS on last beat
-                when (beats_left_out === 1.U) {
-                  rs_valid_vec(rs_out_sel.bits).writeValid := false.B
-                  rs_out_sel.ready := true.B
-                  // append read to service queue if it arrived late, extra guard for passthrough
-                  when (rs_valid_vec(rs_out_sel.bits).readValid || 
-                    ((rs_data_in.bits.source >> 1 === rs_valid_vec(rs_out_sel.bits).source) && 
-                    rs_data_in.valid && rs_data_in.bits.opcode === TLMessages.Get)) {
-                      rs_service_q_in.bits := rs_out_sel.bits
-                      rs_service_q_in.valid := true.B
-                  }
-                }
-              }
+              c_latch := true.B
+              c_wire := true.B
             }
-          }.elsewhen (!c_empty) {
+          }.elsewhen (!c_empty) { // these writes are UNSAFE, need to guard them
             c_deq := true.B
             when (out.a.ready) {
               a_latency_bits := c_q_mem(c_deq_ptr.value)
               a_latency_valid := true.B 
               c_deq_ptr.inc()
               c_addr_map(c_deq_ptr.value).valid := false.B
+              assert(c_q_mem(c_deq_ptr.value).opcode =/= TLMessages.Get)
             }
           }
         }
-        // .elsewhen (!rs_empty && !c_full && !rs_out_rNw && beats_left_out =/= 0.U && !tagmatch_latch) {
-        //   // catch corner where c empties out while a is getting a put request
-        //   // this is naive and only doing residual requests, we already caught tagmatches
-        //   c_enq := true.B
-        //   c_enq_ptr.inc()
-        //   c_q_mem(c_enq_ptr.value) := rs_mem_data_out
-        // }
 
         when (tagmatch_latch) { //temportarily halt all dequeues to process forward
           when (a_d.ready) {
-            printf(cf"bypassing request from source ${rs_valid_vec(rs_out_sel.bits).source}\n")
+            printf(cf"bypassing request from source ${rs_out_sel.bits}\n")
             a_d.bits := edgeIn.Grant(
               fromSink = 0.U,
-              toSource = rs_valid_vec(rs_out_sel.bits).source >> 1,
+              toSource = rs_out_sel.bits,
               lgSize = rs_mem_data_out.size,
               capPermissions = TLPermissions.toT,
               data = c_q_mem(tagmatch_ptr).data
@@ -443,6 +388,77 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
               rs_out_sel.ready := true.B
               tagmatch_latch := false.B
             }
+          }
+        }.elsewhen (do_write) {
+          when (c_full) { // push-through
+            when (out.a.ready && c_a_d.ready) {
+              clear_write_rs := true.B
+              a_latency_bits := c_q_mem(c_deq_ptr.value)
+              a_latency_valid := true.B
+              c_deq_ptr.inc()
+              c_deq := true.B 
+              when (tagmatch_valid) {
+                c_q_mem(tagmatch_ptr) := rs_mem_data_out
+              }.otherwise {
+                c_q_mem(c_enq_ptr.value) := rs_mem_data_out
+                c_enq_ptr.inc()
+                c_enq := true.B
+                when (beats_left_out === 1.U) { // update address pointer in table on last beat, point to first beat
+                  // THIS IS NOT SAFE FOR NON-POW2 SIZED WRITE BUFFERS.
+                  c_addr_map(c_enq_ptr.value - beats_init_out).bits := rs_mem_data_out.address
+                  c_addr_map(c_enq_ptr.value - beats_init_out).valid := true.B
+                }
+              }
+            }
+          }.otherwise {
+            // enqueueing
+            when (c_a_d.ready) {
+              clear_write_rs := true.B
+              // access data
+              when (tagmatch_valid) { // do write coalesce
+                c_q_mem(tagmatch_ptr) := rs_mem_data_out
+              }.otherwise {
+                printf(cf"enqueueing 0x${rs_mem_data_out.address}%x as opcode ${rs_mem_data_out.opcode}\n")
+                c_enq := true.B
+                c_q_mem(c_enq_ptr.value) := rs_mem_data_out
+                c_enq_ptr.inc()
+                when (beats_left_out === 1.U) { // update address pointer in table on last beat, point to first beat
+                  // THIS IS NOT SAFE FOR NON-POW2 SIZED WRITE BUFFERS.
+                  c_addr_map(c_enq_ptr.value - beats_init_out).bits := rs_mem_data_out.address
+                  c_addr_map(c_enq_ptr.value - beats_init_out).valid := true.B
+                }
+              }
+            }
+          }
+          when (clear_write_rs) {
+            // ack writes
+            when (beats_left_out === 0.U) { // only for first beat
+              c_a_d.valid := true.B
+              c_a_d.bits := edgeIn.ReleaseAck(
+                toSource = rs_mem_data_out.source >> 1,
+                lgSize = rs_mem_data_out.size,
+                denied = false.B)
+              // set beats left_out for write
+              beats_left_out := (params.num_write_beats-1).U
+            }.otherwise {
+              beats_left_out := beats_left_out - 1.U
+            }
+            // clear RS on last beat
+            when (beats_left_out === 1.U) {
+              rs_valid_vec(rs_out_sel.bits).writeValid := false.B
+              rs_out_sel.ready := true.B
+              c_latch := false.B
+              // append read to service queue if it arrived late, extra guard for passthrough
+              when (rs_valid_vec(rs_out_sel.bits).readValid || 
+                ((rs_data_in.bits.source >> 1 === rs_out_sel.bits) && 
+                rs_data_in.valid && rs_data_in.bits.opcode === TLMessages.Get)) {
+                  rs_service_q_in.bits := rs_out_sel.bits
+                  rs_service_q_in.valid := true.B
+              }
+            }
+            assert(c_q_mem(c_deq_ptr.value).opcode =/= TLMessages.Get)
+            assert(rs_mem_data_out.opcode =/= TLMessages.Get)
+            assert(rs_mem_data_out.size === 6.U) // temp debug assert
           }
         }
 
@@ -465,13 +481,15 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
               reset_counter := true.B
             }
             beats_left_tx := Mux(beats_init_tx =/= 1.U, Mux(beats_left_tx === 0.U, beats_init_tx, beats_left_tx - 1.U), 0.U)
-            when (a_latency_bits.opcode === 4.U) {assert(beats_init_tx === 0.U, cf"actual = ${beats_init_tx}")}
-            when (a_latency_bits.opcode === 0.U) {assert(beats_init_tx === 3.U, cf"actual = ${beats_init_tx}")}
+            when (a_latency_bits.opcode === 4.U) {assert(beats_init_tx === 0.U, cf"actual = ${beats_init_tx}, size = ${a_latency_bits.size}")}
+            when (a_latency_bits.opcode === 0.U) {assert(beats_init_tx === 3.U, cf"actual = ${beats_init_tx}, size = ${a_latency_bits.size}")}
           }
           when (bandwidth_ctr =/= 0.U) {
             dec_counter := true.B
           }
         }
+
+        when ((beats_left_tx =/= 0.U) && out.a.ready) { assert(a_latency_valid, "A went invalid in the middle of a txn")}
 
         // Tie off unused ports
         in.b.valid := false.B
