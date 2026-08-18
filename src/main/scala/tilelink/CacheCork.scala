@@ -687,6 +687,8 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
         c_deq := false.B
         a_enq := false.B
         a_deq := false.B
+        val c_block = Wire(Bool())
+        c_block := false.B
 
         // high-priority queue is a bigger queue with no fancy things going on.
         val a_enq_ptr = Counter(params.a_queue_depth)
@@ -727,7 +729,7 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
         // ready signals
         c_a.ready := (!(c_full || a_deq || enq_c_req_to_a)) || c_a_to_a_queue.fire
         out_a_q.ready := !a_full
-        a_a.valid := in.a.valid && !toD && !c_deq
+        a_a.valid := in.a.valid && !toD && !c_block
 
         // handle multi-beat nonsense and tagmatching
         val bandwidth_ctr = RegInit(0.U(8.W))
@@ -746,7 +748,7 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
         val tagmatch_ptr = tagmatch_ptr_part + Mux(beats_left_tgmtch === 0.U, 0.U, beats_init_tgmtch - beats_left_tgmtch + 1.U)
         val tagmatch_latch = RegInit(false.B)
 
-        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), (a_a.ready && !c_deq))
+        in.a.ready := Mux(toD, a_d.ready && !(tagmatch_valid || tagmatch_latch), (a_a.ready && !c_block))
 
         val addr_old = RegInit(chiselTypeOf(a_a.bits.address), 0.U)
 
@@ -825,6 +827,7 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
                 a_deq := true.B
                 c_deq_ptr.inc()
                 c_deq := true.B 
+                c_block := true.B 
                 when (tagmatch_valid) {
                   c_q_mem(tagmatch_ptr) := a_q_mem(a_deq_ptr.value)
                 }.otherwise {
@@ -849,11 +852,12 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
               }
             }
           }.elsewhen (!c_empty) {
-            c_deq := true.B
+            c_block := true.B
             when (out.a.ready) {
               a_latency_bits := c_q_mem(c_deq_ptr.value)
               a_latency_valid := true.B 
               c_deq_ptr.inc()
+              c_deq := true.B
               c_addr_map(c_deq_ptr.value).valid := false.B
             }
           }
