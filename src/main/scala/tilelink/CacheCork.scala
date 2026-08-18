@@ -14,7 +14,7 @@ case class TLCacheCorkParams(
   sinkIds: Int = 20,
   writeBufEntries: Int = 80,
   ram_latency: Int = 100,
-  ram_bandiwdth: Int = 10,
+  ram_bandiwdth: Int = 10, // 1/bandwidth
   a_queue_depth: Int = 100,
   num_write_beats: Int = 4,
   num_llc_mshrs: Int = 20)
@@ -214,7 +214,8 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         val c_q_mem = Mem(params.writeBufEntries, chiselTypeOf(c_a.bits)) // an optimization exists here for multi-beat requests but I am simply too lazy to figure it out.
 
         // ready signals
-        rs_data_in.ready := true.B
+        val repeat = WireInit(false.B)
+        rs_data_in.ready := !repeat // when repeating, we are enqueing to the service queue, so it's not safe to put data into an RS
         
         val bandwidth_ctr = RegInit(0.U((log2Ceil(params.ram_bandiwdth)).W))
 
@@ -349,6 +350,7 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
                     when (!c_full) {
                       c_latch := true.B 
                     }.otherwise {
+                      repeat := rs_valid_vec(rs_out_sel.bits).writeValid
                       rs_service_q_in.bits := rs_out_sel.bits
                       rs_service_q_in.valid := true.B
                     }  
@@ -452,6 +454,7 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
               when (rs_valid_vec(rs_out_sel.bits).readValid || 
                 ((rs_data_in.bits.source >> 1 === rs_out_sel.bits) && 
                 rs_data_in.valid && rs_data_in.bits.opcode === TLMessages.Get)) {
+                  repeat := rs_valid_vec(rs_out_sel.bits).readValid
                   rs_service_q_in.bits := rs_out_sel.bits
                   rs_service_q_in.valid := true.B
               }
