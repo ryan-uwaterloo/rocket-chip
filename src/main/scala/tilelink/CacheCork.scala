@@ -220,7 +220,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
 
         when (c_full) { // switch to enqueing to a when writebuff fills
           enq_c_req_to_a := true.B
-        }.elsewhen (a_empty) { // switch back only when high prio queue empties and c is no longer full.
+        }.elsewhen (a_empty && ! c_a.valid) { // switch back only when high prio queue empties and c is no longer full.
           enq_c_req_to_a := false.B 
         }
 
@@ -228,7 +228,7 @@ class TLCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p: P
         val c_q_mem = Mem(params.writeBufEntries, chiselTypeOf(c_a.bits)) // an optimization exists here for multi-beat requests but I am simply too lazy to figure it out.
 
         // ready signals
-        c_a.ready := (!(c_full || a_deq || enq_c_req_to_a)) || c_a_to_a_queue.fire
+        c_a.ready := (!(c_full || a_deq || enq_c_req_to_a || (c_block && !out.a.ready))) || c_a_to_a_queue.fire
         out_a_q.ready := !a_full
         a_a.valid := in.a.valid && !toD && !c_block
 
