@@ -185,7 +185,8 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         // TLArbiter(TLArbiter.lowestIndexFirst)(out.a, (edgeOut.numBeats1(c_a.bits), c_a), (edgeOut.numBeats1(a_a.bits), a_a))
         a_latency_valid := false.B 
         a_latency_bits := DontCare
-        TLArbiter(TLArbiter.lowestIndexFirst)(in_d, (edgeIn.numBeats1(d_d.bits), d_d), (0.U, Queue(c_a_d, 2)), (0.U, Queue(c_d, 2)), (edgeIn.numBeats1(a_d.bits), Queue(a_d, 8)))
+        val a_d_queue = Queue(a_d, 8)
+        TLArbiter(TLArbiter.lowestIndexFirst)(in_d, (edgeIn.numBeats1(d_d.bits), d_d), (0.U, Queue(c_a_d, 2)), (0.U, Queue(c_d, 2)), (edgeIn.numBeats1(a_d_queue.bits), a_d_queue))
 
         // implement RS per MSHR to accomodate all requests, iterate over them in WCRR order, then also include a write buffer.
         val c_enq = Wire(Bool())
