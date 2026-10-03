@@ -14,7 +14,7 @@ case class TLCacheCorkParams(
   sinkIds: Int = 20,
   writeBufEntries: Int = 80,
   ram_latency: Int = 100,
-  ram_bandiwdth: Int = 10, // 1/bandwidth
+  ram_bandwidth: Int = 10, // 1/bandwidth
   a_queue_depth: Int = 100,
   num_write_beats: Int = 4,
   num_llc_mshrs: Int = 20)
@@ -218,7 +218,7 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         val repeat = WireInit(false.B)
         rs_data_in.ready := !repeat // when repeating, we are enqueing to the service queue, so it's not safe to put data into an RS
         
-        val bandwidth_ctr = RegInit(0.U((log2Ceil(params.ram_bandiwdth)).W))
+        val bandwidth_ctr = RegInit(0.U((log2Ceil(params.ram_bandwidth)).W))
 
         // handle multi-beat nonsense and tagmatching
         val beats_left_in = RegInit(0.U((log2Ceil(params.num_write_beats)).W))
@@ -476,7 +476,7 @@ class TLRRCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(implicit p:
         dec_counter := false.B
         reset_counter := false.B
 
-        bandwidth_ctr := Mux(reset_counter, params.ram_bandiwdth.U, 
+        bandwidth_ctr := Mux(reset_counter, params.ram_bandwidth.U, 
             Mux(dec_counter, bandwidth_ctr - 1.U, bandwidth_ctr))
 
         when (out.a.ready && !tagmatch_latch) {
@@ -905,7 +905,7 @@ class TLSplitPrioCacheCork(params: TLCacheCorkParams = TLCacheCorkParams())(impl
         dec_counter := false.B
         reset_counter := false.B
 
-        bandwidth_ctr := Mux(reset_counter, params.ram_bandiwdth.U, 
+        bandwidth_ctr := Mux(reset_counter, params.ram_bandwidth.U, 
             Mux(dec_counter, bandwidth_ctr - 1.U, bandwidth_ctr))
 
         when (out.a.ready && !tagmatch_latch) {
