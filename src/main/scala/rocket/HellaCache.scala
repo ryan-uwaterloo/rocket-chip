@@ -36,6 +36,7 @@ case class DCacheParams(
     acquireBeforeRelease: Boolean = false,
     pipelineWayMux: Boolean = false,
     clockGate: Boolean = false,
+    nCores: Int = 2,
     scratch: Option[BigInt] = None) extends L1CacheParams {
 
   def tagCode: Code = Code.fromString(tagECC)
